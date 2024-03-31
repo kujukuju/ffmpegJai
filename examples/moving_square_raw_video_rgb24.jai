@@ -17,53 +17,47 @@ Pixel :: struct {
 }
 
 main :: () {
-    codec: *AVCodec = avcodec_find_encoder(.AV_CODEC_ID_H264);
+    codec: *AVCodec = avcodec_find_encoder(.AV_CODEC_ID_RAWVIDEO);
     assert(!!codec, "Could not find codec.\n");
 
     codec_context: *AVCodecContext = avcodec_alloc_context3(codec);
     assert(!!codec_context, "Could not allocate video codec context.\n");
-    codec_context.bit_rate = 0;
+    // codec_context.bit_rate = 40000000;
     codec_context.width = width;
     codec_context.height = height;
     codec_context.time_base = .{1, fps};
     codec_context.framerate = .{fps, 1};
     codec_context.gop_size = 10;
     codec_context.max_b_frames = 1;
-    codec_context.pix_fmt = .AV_PIX_FMT_YUV420P;
-
-    av_opt_set(codec_context.priv_data, "preset", "veryfast", 0);
-    av_opt_set(codec_context.priv_data, "qp", "0", 0);
+    codec_context.pix_fmt = .AV_PIX_FMT_RGB24;
 
     if avcodec_open2(codec_context, codec, null) != 0 {
         assert(false, "Could not open codec.\n");
     }
 
-    filename :: "moving_square_h264.mp4";
+    filename :: "moving_square_raw_video_rgb24.avi";
 
     format_context: *AVFormatContext;
     avformat_alloc_output_context2(*format_context, null, null, filename);
     assert(!!format_context, "Could not allocate format context.\n");
 
-    stream: *AVStream = avformat_new_stream(format_context, null);
-
-    if avcodec_parameters_from_context(stream.codecpar, codec_context) != 0 {
-        assert(false, "Could not copy codec parameters to stream.\n");
+    if format_context.oformat.flags & AVFMT_GLOBALHEADER {
+        codec_context.flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
 
-    stream.codecpar.framerate = codec_context.framerate;
-    stream.codecpar.bit_rate = 0;
-
+    stream: *AVStream = avformat_new_stream(format_context, null);
+    assert(!!stream, "Could not create new stream.\n");
+    avcodec_parameters_from_context(stream.codecpar, codec_context);
     stream.time_base = codec_context.time_base;
-    stream.avg_frame_rate = codec_context.framerate;
-    stream.r_frame_rate = codec_context.framerate;
+    
+    print("w h % %\n", stream.codecpar.width, stream.codecpar.height);
 
     if avio_open(*format_context.pb, filename, AVIO_FLAG_WRITE) != 0 {
         assert(false, "Could not open output file.\n");
     }
 
-    if avformat_write_header(format_context, null) != 0 {
-        assert(false, "Could not write header to output file.\n");
-    }
+    ret: s32 = avformat_write_header(format_context, null);
+    assert(ret == 0, "Could not write header.\n");
 
     frame: *AVFrame = av_frame_alloc();
     assert(!!frame, "Could not allocate frame.\n");
@@ -71,19 +65,22 @@ main :: () {
     frame.format = cast(s32) codec_context.pix_fmt;
     frame.width = codec_context.width;
     frame.height = codec_context.height;
-    // frame.time_base = codec_context.time_base;
+    // frame.color_range = .AVCOL_RANGE_MPEG;
+    // frame.color_primaries = .AVCOL_PRI_BT709;
+    // frame.color_trc = .AVCOL_TRC_IEC61966_2_1;
+    // frame.colorspace = .AVCOL_SPC_BT709;
 
-    ret: s32 = av_frame_get_buffer(frame, 0);
-    if ret != 0 {
-        assert(false, "Could not allocate frame buffer.\n");
-    }
+    ret = av_frame_get_buffer(frame, 0);
+    assert(ret == 0, "Could not allocate frame buffer.\n");
 
     packet: *AVPacket = av_packet_alloc();
     assert(!!packet, "Could not allocate packet.\n");
 
-    y: [..] u8;
-    u: [..] u8;
-    v: [..] u8;
+    // r: [..] u8;
+    // g: [..] u8;
+    // b: [..] u8;
+
+    rgb: [..] u8;
 
     print("frames: %\n", frame_count);
 
@@ -91,31 +88,39 @@ main :: () {
         ret = av_frame_make_writable(frame);
         assert(ret == 0, "Could not make frame writable.\n");
 
-        get_frame_data_separate(i, *y, *u, *v);
-        frame.data[0] = y.data;
-        frame.data[1] = u.data;
-        frame.data[2] = v.data;
+        // get_frame_data_separate(i, *r, *g, *b);
+        // frame.data[0] = r.data;
+        // frame.data[1] = g.data;
+        // frame.data[2] = b.data;
+        // frame.linesize[0] = width;
+        // frame.linesize[1] = width;
+        // frame.linesize[2] = width;
 
-        frame.linesize[0] = width * size_of(u8);
-        frame.linesize[1] = width * size_of(u8);
-        frame.linesize[2] = width * size_of(u8);
+        get_frame_data(i, *rgb);
+        frame.data[0] = rgb.data;
+        frame.linesize[0] = width * 3;
 
-        // frame.pts = i;
-        frame.pts = i * fps;
+        frame.pts = i;
 
         ret = avcodec_send_frame(codec_context, frame);
         assert(ret == 0, "Could not send frame data.\n");
 
-        while true {
+        while ret >= 0 {
             ret = avcodec_receive_packet(codec_context, packet);
-            if ret < 0 {
+            if ret != 0 {
                 break;
             }
 
             av_interleaved_write_frame(format_context, packet);
-
             av_packet_unref(packet);
         }
+    }
+
+    // flush?
+    avcodec_send_frame(codec_context, null);
+    while avcodec_receive_packet(codec_context, packet) == 0 {
+        av_interleaved_write_frame(format_context, packet);
+        av_packet_unref(packet);
     }
 
     av_write_trailer(format_context);
@@ -128,10 +133,8 @@ main :: () {
     avformat_close_input(*format_context);
 }
 
-get_frame_data_separate :: (frame: int, y: *[..] u8, u: *[..] u8, v: *[..] u8) {
-    array_resize(y, width * height);
-    array_resize(u, width * height);
-    array_resize(v, width * height);
+get_frame_data :: (frame: int, rgb: *[..] u8) {
+    array_resize(rgb, width * height * 3);
 
     progress := cast(float) frame / (frame_count - 1);
     cube_width :: 32;
@@ -145,12 +148,7 @@ get_frame_data_separate :: (frame: int, y: *[..] u8, u: *[..] u8, v: *[..] u8) {
         cast(int) ((cube_end[1] - cube_start[1]) * progress + cube_start[1]),
     ];
 
-    black_y, black_u, black_v := rgb_to_yuv(0, 0, 0);
-    white_y, white_u, white_v := rgb_to_yuv(255, 255, 255);
-
-    memset(y.data, black_y, width * height);
-    memset(u.data, black_u, width * height);
-    memset(v.data, black_v, width * height);
+    memset(rgb.data, 0, rgb.count);
 
     for y_offset: 0..cube_height - 1 {
         cube_y := cube_position[1] + y_offset;
@@ -159,21 +157,46 @@ get_frame_data_separate :: (frame: int, y: *[..] u8, u: *[..] u8, v: *[..] u8) {
             cube_x := cube_position[0] + x_offset;
 
             index := cube_y * width + cube_x;
-            y.*[index] = white_y;
-            u.*[index] = white_u;
-            v.*[index] = white_v;
+            rgb.*[index * 3 + 0] = 255;
+            rgb.*[index * 3 + 1] = 255;
+            rgb.*[index * 3 + 2] = 255;
         }
     }
 }
 
-// by the way this method is wrong
-// u and v are half dimensions for some reason
-rgb_to_yuv :: (r: int, g: int, b: int) -> u8, u8, u8 {
-    y := cast(u8) clamp(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16, 0, 255);
-    u := cast(u8) clamp(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128, 0, 255);
-    v := cast(u8) clamp(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128, 0, 255);
+get_frame_data_separate :: (frame: int, r: *[..] u8, g: *[..] u8, b: *[..] u8) {
+    array_resize(r, width * height);
+    array_resize(g, width * height);
+    array_resize(b, width * height);
 
-    return y, u, v;
+    progress := cast(float) frame / (frame_count - 1);
+    cube_width :: 32;
+    cube_height :: 32;
+
+    cube_start :: int.[0, 540 - cube_height / 2];
+    cube_end :: int.[width - cube_width, 540 - cube_height / 2];
+
+    cube_position := int.[
+        cast(int) ((cube_end[0] - cube_start[0]) * progress + cube_start[0]),
+        cast(int) ((cube_end[1] - cube_start[1]) * progress + cube_start[1]),
+    ];
+
+    memset(r.data, 0, width * height);
+    memset(g.data, 0, width * height);
+    memset(b.data, 0, width * height);
+
+    for y_offset: 0..cube_height - 1 {
+        cube_y := cube_position[1] + y_offset;
+
+        for x_offset: 0..cube_width - 1 {
+            cube_x := cube_position[0] + x_offset;
+
+            index := cube_y * width + cube_x;
+            r.*[index] = 255;
+            g.*[index] = 255;
+            b.*[index] = 255;
+        }
+    }
 }
 
 #import "ffmpegJai";

@@ -1,7 +1,5 @@
 
-// this doesnt work at all. if you use ffprobe the fps values are all extremely incorrect
-// I think it has to do with not correct yuv conversion values so it has the wrong data size
-// otherwise I have no clue... it works except for the fps values as you can see using ffprobe
+// this doesn't work, but I think the timing issue with h264 yuv might have been with the incorrect data size getting multiplied down the various ffmpeg conversion math
 
 fps :: 60;
 duration :: 8000;
@@ -81,27 +79,32 @@ main :: () {
     packet: *AVPacket = av_packet_alloc();
     assert(!!packet, "Could not allocate packet.\n");
 
-    y: [..] u8;
-    u: [..] u8;
-    v: [..] u8;
+    sws_context: *SwsContext = sws_getContext(
+        width, height, .AV_PIX_FMT_RGB24,
+        width, height, .AV_PIX_FMT_YUV420P,
+        SWS_BILINEAR, null, null, null);
 
-    print("frames: %\n", frame_count);
+    r: [..] u8;
+    g: [..] u8;
+    b: [..] u8;
 
     for i: 0..frame_count - 1 {
         ret = av_frame_make_writable(frame);
         assert(ret == 0, "Could not make frame writable.\n");
 
-        get_frame_data_separate(i, *y, *u, *v);
-        frame.data[0] = y.data;
-        frame.data[1] = u.data;
-        frame.data[2] = v.data;
+        get_frame_data_separate(i, *r, *g, *b);
 
+        frame.data[0] = r.data;
+        frame.data[1] = g.data;
+        frame.data[2] = b.data;
         frame.linesize[0] = width * size_of(u8);
         frame.linesize[1] = width * size_of(u8);
         frame.linesize[2] = width * size_of(u8);
 
-        // frame.pts = i;
-        frame.pts = i * fps;
+        sws_scale(sws_context, frame.data.data, frame.linesize.data, 0, height, frame.data.data, frame.linesize.data);
+
+        frame.pts = i;
+        // frame.pts = i * fps;
 
         ret = avcodec_send_frame(codec_context, frame);
         assert(ret == 0, "Could not send frame data.\n");
@@ -128,10 +131,10 @@ main :: () {
     avformat_close_input(*format_context);
 }
 
-get_frame_data_separate :: (frame: int, y: *[..] u8, u: *[..] u8, v: *[..] u8) {
-    array_resize(y, width * height);
-    array_resize(u, width * height);
-    array_resize(v, width * height);
+get_frame_data_separate :: (frame: int, r: *[..] u8, g: *[..] u8, b: *[..] u8) {
+    array_resize(r, width * height);
+    array_resize(g, width * height);
+    array_resize(b, width * height);
 
     progress := cast(float) frame / (frame_count - 1);
     cube_width :: 32;
@@ -145,12 +148,9 @@ get_frame_data_separate :: (frame: int, y: *[..] u8, u: *[..] u8, v: *[..] u8) {
         cast(int) ((cube_end[1] - cube_start[1]) * progress + cube_start[1]),
     ];
 
-    black_y, black_u, black_v := rgb_to_yuv(0, 0, 0);
-    white_y, white_u, white_v := rgb_to_yuv(255, 255, 255);
-
-    memset(y.data, black_y, width * height);
-    memset(u.data, black_u, width * height);
-    memset(v.data, black_v, width * height);
+    memset(r.data, 0, width * height);
+    memset(g.data, 0, width * height);
+    memset(b.data, 0, width * height);
 
     for y_offset: 0..cube_height - 1 {
         cube_y := cube_position[1] + y_offset;
@@ -159,9 +159,9 @@ get_frame_data_separate :: (frame: int, y: *[..] u8, u: *[..] u8, v: *[..] u8) {
             cube_x := cube_position[0] + x_offset;
 
             index := cube_y * width + cube_x;
-            y.*[index] = white_y;
-            u.*[index] = white_u;
-            v.*[index] = white_v;
+            r.*[index] = 255;
+            g.*[index] = 255;
+            b.*[index] = 255;
         }
     }
 }

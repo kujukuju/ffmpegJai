@@ -30,12 +30,16 @@ main :: () {
     codec_context.gop_size = 10;
     codec_context.max_b_frames = 1;
     codec_context.pix_fmt = .AV_PIX_FMT_BGRA;
+    codec_context.thread_count = 8;
+
+
+    av_opt_set(codec_context.priv_data, "level", "0", 0);
 
     if avcodec_open2(codec_context, codec, null) != 0 {
         assert(false, "Could not open codec.\n");
     }
 
-    filename :: "moving_square_raw_video_other.avi";
+    filename :: "moving_square_raw_video_ffv1_avi.avi";
 
     format_context: *AVFormatContext;
     avformat_alloc_output_context2(*format_context, null, null, filename);
@@ -65,10 +69,6 @@ main :: () {
     frame.format = cast(s32) codec_context.pix_fmt;
     frame.width = codec_context.width;
     frame.height = codec_context.height;
-    // frame.color_range = .AVCOL_RANGE_MPEG;
-    // frame.color_primaries = .AVCOL_PRI_BT709;
-    // frame.color_trc = .AVCOL_TRC_IEC61966_2_1;
-    // frame.colorspace = .AVCOL_SPC_BT709;
 
     ret = av_frame_get_buffer(frame, 0);
     assert(ret == 0, "Could not allocate frame buffer.\n");
@@ -107,6 +107,8 @@ main :: () {
 
         frame.pts = i;
 
+        start := seconds_since_init();
+
         ret = avcodec_send_frame(codec_context, frame);
         assert(ret == 0, "Could not send frame data.\n");
 
@@ -119,6 +121,8 @@ main :: () {
             av_interleaved_write_frame(format_context, packet);
             av_packet_unref(packet);
         }
+
+        print("Write duration: %\n", (seconds_since_init() - start) * 1000);
     }
 
     // flush?

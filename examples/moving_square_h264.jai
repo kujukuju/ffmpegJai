@@ -1,7 +1,7 @@
 
-fps :: 30;
+fps :: 60;
 duration :: 8000;
-frame_count :: duration / fps;
+frame_count :: fps * duration / 1000;
 
 width :: 1920;
 height :: 1080;
@@ -18,7 +18,7 @@ main :: () {
 
     codec_context: *AVCodecContext = avcodec_alloc_context3(codec);
     assert(!!codec_context, "Could not allocate video codec context.\n");
-    codec_context.bit_rate = 4000000;
+    codec_context.bit_rate = 0;
     codec_context.width = width;
     codec_context.height = height;
     codec_context.time_base = .{1, fps};
@@ -27,7 +27,7 @@ main :: () {
     codec_context.max_b_frames = 1;
     codec_context.pix_fmt = .AV_PIX_FMT_YUV420P;
 
-    av_opt_set(codec_context.priv_data, "preset", "fast", 0);
+    av_opt_set(codec_context.priv_data, "preset", "veryfast", 0);
     av_opt_set(codec_context.priv_data, "qp", "0", 0);
 
     if avcodec_open2(codec_context, codec, null) != 0 {
@@ -46,8 +46,12 @@ main :: () {
         assert(false, "Could not copy codec parameters to stream.\n");
     }
 
+    stream.codecpar.framerate = codec_context.framerate;
+    stream.codecpar.bit_rate = 0;
+
     stream.time_base = codec_context.time_base;
-    stream.avg_frame_rate = .{fps, 1};
+    stream.avg_frame_rate = codec_context.framerate;
+    stream.r_frame_rate = codec_context.framerate;
 
     if avio_open(*format_context.pb, filename, AVIO_FLAG_WRITE) != 0 {
         assert(false, "Could not open output file.\n");
@@ -63,6 +67,7 @@ main :: () {
     frame.format = cast(s32) codec_context.pix_fmt;
     frame.width = codec_context.width;
     frame.height = codec_context.height;
+    // frame.time_base = codec_context.time_base;
 
     ret: s32 = av_frame_get_buffer(frame, 0);
     if ret != 0 {
@@ -75,6 +80,8 @@ main :: () {
     y: [..] u8;
     u: [..] u8;
     v: [..] u8;
+
+    print("frames: %\n", frame_count);
 
     for i: 0..frame_count - 1 {
         ret = av_frame_make_writable(frame);
@@ -89,7 +96,8 @@ main :: () {
         frame.linesize[1] = width * size_of(u8);
         frame.linesize[2] = width * size_of(u8);
 
-        frame.pts = i * (codec_context.time_base.den / codec_context.time_base.num);
+        // frame.pts = i;
+        frame.pts = i * fps;
 
         ret = avcodec_send_frame(codec_context, frame);
         assert(ret == 0, "Could not send frame data.\n");
